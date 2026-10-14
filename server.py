@@ -11,16 +11,27 @@ if len(PASSWORD) < 16:
 SALT = secrets.token_bytes(16)
 KEY = hashlib.scrypt(PASSWORD.encode(), salt=SALT, n=16384, r=8, p=1)
 del PASSWORD
+LEVEL_KEYS = {}
+for level in range(2, 6):
+    secret = os.environ.get(f'ARCHIVES_LEVEL_{level}_PASSWORD', '')
+    if secret:
+        if len(secret) < 16:
+            raise SystemExit(f'Password for level {level} must contain at least 16 characters.')
+        LEVEL_KEYS[level] = hashlib.scrypt(secret.encode(), salt=SALT, n=16384, r=8, p=1)
+    del secret
 DB = Path(os.environ.get('ARCHIVES_DB', '/workspace/archivesguernica-data/archives.sqlite3'))
 DB.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 with sqlite3.connect(DB) as db:
     db.execute('CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL, body TEXT NOT NULL)')
+    columns = {row[1] for row in db.execute('PRAGMA table_info(documents)')}
+    if 'level' not in columns:
+        db.execute('ALTER TABLE documents ADD COLUMN level INTEGER NOT NULL DEFAULT 5')
 os.chmod(DB, 0o600)
 SESSIONS = {}
 ATTEMPTS = []
 LOCK = threading.Lock()
 SECURE = os.environ.get('ARCHIVES_SECURE_COOKIE', '1') != '0'
-LOGIN = '''<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Archives Guernica — Connexion</title><style>body{background:#101714;color:#e3e6d9;font:18px Georgia;margin:12vh auto;padding:24px;max-width:460px}input,button{box-sizing:border-box;width:100%;padding:15px;margin:12px 0;background:#17211c;color:#e3e6d9;border:1px solid #78836d}p{line-height:1.6;color:#a2ad9e}</style><h1>Archives Guernica</h1><p>Espace privé · Accès réservé à l’administrateur.</p><form id="login"><label for="password">Mot de passe</label><input id="password" type="password" autocomplete="current-password" required><button>Se connecter</button><p id="error" role="alert"></p></form><script>document.getElementById('login').onsubmit=async e=>{e.preventDefault();try{const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('password').value})});if(r.ok)location='/';else document.getElementById('error').textContent=r.status===429?'Trop de tentatives. Réessayez dans 15 minutes.':'Connexion refusée.'}catch{document.getElementById('error').textContent='Serveur indisponible.'}}</script></html>'''
+LOGIN = '''<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Archives Guernica — Connexion</title><style>body{background:#101714;color:#e3e6d9;font:18px Georgia;margin:12vh auto;padding:24px;max-width:460px}input,button{box-sizing:border-box;width:100%;padding:15px;margin:12px 0;background:#17211c;color:#e3e6d9;border:1px solid #78836d}p{line-height:1.6;color:#a2ad9e}</style><h1>Archives Guernica</h1><p>Espace privé · Accès selon votre échelon.</p><form id="login"><label for="level">Accès</label><select id="level" style="width:100%;padding:12px"><option value="admin">Administration</option><option value="2">Échelon 2</option><option value="3">Échelon 3</option><option value="4">Échelon 4</option><option value="5">Échelon 5</option></select><label for="password">Mot de passe</label><input id="password" type="password" autocomplete="current-password" required><button>Se connecter</button><p id="error" role="alert"></p></form><script>document.getElementById('login').onsubmit=async e=>{e.preventDefault();try{const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level:document.getElementById('level').value,password:document.getElementById('password').value})});if(r.ok)location='/';else document.getElementById('error').textContent=r.status===429?'Trop de tentatives. Réessayez dans 15 minutes.':'Connexion refusée.'}catch{document.getElementById('error').textContent='Serveur indisponible.'}}</script></html>'''
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -44,18 +55,20 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             now=time.time()
             for key in list(SESSIONS):
-                if SESSIONS[key]<now: del SESSIONS[key]
+                if SESSIONS[key]['expires']<now: del SESSIONS[key]
             return token if token in SESSIONS else None
     def do_GET(self):
         if self.path=='/login': return self.send(200,LOGIN,'text/html')
         if not self.session():
             if self.path.startswith('/api/'): return self.send(401,'{}')
             self.send_response(303); self.send_header('Location','/login'); self.send_header('Cache-Control','no-store'); self.end_headers(); return
+        if self.path=='/api/session':
+            return self.send(200,json.dumps({k:v for k,v in SESSIONS[self.session()].items() if k in ('level','admin')}))
         if self.path=='/': return self.send(200,(ROOT/'index.html').read_bytes(),'text/html')
         if self.path=='/api/documents':
             with sqlite3.connect(DB) as db:
                 db.row_factory=sqlite3.Row
-                return self.send(200,json.dumps([dict(r) for r in db.execute('SELECT * FROM documents ORDER BY id DESC')]))
+                return self.send(200,json.dumps([dict(r) for r in db.execute('SELECT * FROM documents WHERE level <= ? ORDER BY id DESC',(SESSIONS[self.session()]['level'],))]))
         return self.send(404,'{}')
     def do_POST(self):
         # Same-origin JSON requests only; browser cross-origin forms cannot invoke mutations.
@@ -73,10 +86,14 @@ class Handler(BaseHTTPRequestHandler):
                 ATTEMPTS.append(now)
             password=data.get('password','')
             if not isinstance(password,str) or len(password)>1000: return self.send(401,'{}')
+            selected=data.get('level','admin')
+            level=int(selected) if isinstance(selected,str) and selected in ('2','3','4','5') else None
+            admin=selected=='admin'
+            expected=KEY if admin else LEVEL_KEYS.get(level)
             candidate=hashlib.scrypt(password.encode(),salt=SALT,n=16384,r=8,p=1)
-            if not hmac.compare_digest(candidate,KEY): return self.send(401,'{}')
+            if expected is None or not hmac.compare_digest(candidate,expected): return self.send(401,'{}')
             token=secrets.token_urlsafe(32)
-            with LOCK: SESSIONS[token]=time.time()+3600
+            with LOCK: SESSIONS[token]={'expires':time.time()+3600,'level':5 if admin else level,'admin':admin}
             return self.send(200,'{}',cookie='session='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=3600'+('; Secure' if SECURE else ''))
         token=self.session()
         if not token: return self.send(401,'{}')
@@ -84,10 +101,13 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK: SESSIONS.pop(token,None)
             return self.send(200,'{}',cookie='session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'+('; Secure' if SECURE else ''))
         if self.path=='/api/documents':
+            if not SESSIONS[token]['admin']: return self.send(403,'{}')
+            level=data.get('level',5)
+            if type(level) is not int or level not in (2,3,4,5): return self.send(400,'{}')
             if not all(isinstance(data.get(k),str) and data[k].strip() for k in ('title','category','body')): return self.send(400,'{}')
             if len(data['title'])>200 or len(data['category'])>100 or len(data['body'])>50000: return self.send(400,'{}')
             with sqlite3.connect(DB) as db:
-                db.execute('INSERT INTO documents(title,category,body) VALUES(?,?,?)',tuple(data[k].strip() for k in ('title','category','body')))
+                db.execute('INSERT INTO documents(title,category,body,level) VALUES(?,?,?,?)',tuple(data[k].strip() for k in ('title','category','body'))+(level,))
             return self.send(201,'{}')
         return self.send(404,'{}')
 

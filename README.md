@@ -44,3 +44,21 @@ from wsgi import application
 5. Vérifier la redirection vers la connexion, l’ajout d’un dossier de test et la déconnexion. Depuis une fenêtre privée, vérifier que `/api/documents` refuse l’accès.
 
 La base et la configuration sont dans `~/.config/archivesguernica/`, hors du dépôt. Ne pas les partager. Faire des sauvegardes privées. Les sessions et la limitation des tentatives sont en mémoire : cette version suppose un seul processus WSGI et invalide les sessions après rechargement. Vérifier les conditions de renouvellement et les quotas affichés par PythonAnywhere. Les tests locaux ne prouvent pas le déploiement distant. L’hébergeur et l’administrateur du compte peuvent accéder au stockage ; il n’est pas chiffré par l’application.
+
+## Échelons 2 à 5
+
+Les codes d’échelon sont des accès **en lecture seule**, distincts de l’administration. L’accès est cumulatif : 2 voit les dossiers 2 ; 3 voit 2 et 3 ; 4 voit 2 à 4 ; 5 voit tous les dossiers. Le filtrage est appliqué côté serveur avant tout envoi au navigateur. Seul l’administrateur crée et classe les documents. Les documents existants sont conservés et classés automatiquement au niveau 5 lors du premier démarrage de cette version.
+
+Sur PythonAnywhere, dans Bash :
+
+```bash
+cd ~/archivesguernica
+git pull --ff-only
+python3 configure_levels.py
+```
+
+Saisir puis confirmer les quatre codes distincts (au moins 16 caractères chacun). La saisie est masquée. Le script préserve le mot de passe administrateur et les autres paramètres existants et remplace uniquement les codes d’échelon après validation de toutes les saisies. Il écrit atomiquement la configuration privée hors du dépôt. Puis **Web → Reload** pour activer les codes et invalider toutes les sessions existantes. Une rotation future utilise la même commande. Aucun code par défaut n’est inclus.
+
+Pour un démarrage local sans WSGI, fournir `ARCHIVES_LEVEL_2_PASSWORD`, `ARCHIVES_LEVEL_3_PASSWORD`, `ARCHIVES_LEVEL_4_PASSWORD`, `ARCHIVES_LEVEL_5_PASSWORD` en variables secrètes. Un échelon sans code configuré est inaccessible. Ce sont des codes partagés par groupe, sans identification individuelle ni révocation d’une seule personne. La limite des tentatives est commune aux accès.
+
+Validation : `python3 -m unittest discover -s tests -v` vérifie la migration d’une ancienne base, la matrice complète d’accès cumulatif, les refus de création par les lecteurs, les mauvais échelons et la déconnexion. Un parcours Chromium a également vérifié la création et la classification administrateur, la connexion au niveau 2, l’absence de dossier de niveau 5 et la lecture autorisée.

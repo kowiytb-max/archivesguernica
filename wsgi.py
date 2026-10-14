@@ -11,6 +11,9 @@ if settings.exists():
     config = json.loads(settings.read_text())
     os.environ.setdefault('ARCHIVES_ADMIN_PASSWORD', config['password'])
     os.environ.setdefault('ARCHIVES_DB', config['database'])
+    for level, password in config.get('levels', {}).items():
+        if level in ('2', '3', '4', '5'):
+            os.environ.setdefault(f'ARCHIVES_LEVEL_{level}_PASSWORD', password)
 os.environ.setdefault('ARCHIVES_SECURE_COOKIE', '1')
 from server import Handler
 
