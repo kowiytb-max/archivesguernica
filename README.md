@@ -25,3 +25,22 @@ Un seul administrateur partagé ; sessions de 1 heure en mémoire (invalidées a
 ## Validation
 
 Parcours testé dans Chromium : redirection sans session, refus de mot de passe erroné, API inaccessible sans session, connexion, création de dossier, recherche insensible aux accents, lecture, rendu du contenu comme texte, fermeture au clavier, état sans résultat et déconnexion. Tests exécutés avec base temporaire et secret aléatoire ; aucune donnée de test conservée dans la base de production.
+
+## PythonAnywhere
+
+1. Dans une console Bash : `git clone https://github.com/kowiytb-max/archivesguernica.git`, puis `cd archivesguernica` et `python3 configure_host.py`. Le mot de passe est saisi sans affichage et conservé hors du dépôt avec des permissions privées.
+2. Web → Add a new web app → domaine gratuit → Manual configuration → Python 3.12 (ou version compatible disponible).
+3. Ouvrir le fichier de configuration WSGI proposé dans Web. Remplacer son contenu par le code suivant en remplaçant USERNAME par le nom exact du compte :
+
+```python
+import sys
+project = '/home/USERNAME/archivesguernica'
+if project not in sys.path:
+    sys.path.insert(0, project)
+from wsgi import application
+```
+
+4. Ne configurer aucun « Static files » pour ce dépôt : toutes les pages doivent passer par l’authentification. Activer « Force HTTPS » si disponible, puis Reload. Utiliser uniquement l’adresse HTTPS affichée dans l’onglet Web.
+5. Vérifier la redirection vers la connexion, l’ajout d’un dossier de test et la déconnexion. Depuis une fenêtre privée, vérifier que `/api/documents` refuse l’accès.
+
+La base et la configuration sont dans `~/.config/archivesguernica/`, hors du dépôt. Ne pas les partager. Faire des sauvegardes privées. Les sessions et la limitation des tentatives sont en mémoire : cette version suppose un seul processus WSGI et invalide les sessions après rechargement. Vérifier les conditions de renouvellement et les quotas affichés par PythonAnywhere. Les tests locaux ne prouvent pas le déploiement distant. L’hébergeur et l’administrateur du compte peuvent accéder au stockage ; il n’est pas chiffré par l’application.
